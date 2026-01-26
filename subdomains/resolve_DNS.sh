@@ -2,21 +2,23 @@
 
 # Script: resolve_DNS.sh
 # Función:
-#   Resuelve subdominios a IPs y genera un CSV con el formato:
-#   IP, dominio1, dominio2, dominio3, ...
-#   Soporta múltiples dominios por IP y columnas dinámicas.
+#   Resuelve cada subdominio usando dig y genera:
+#   1) Un CSV con todas las resoluciones DNS (CNAME y A):
+#        domain,ip_or_domain
+#   2) Un archivo con IPs IPv4 numéricas únicas:
+#        unique_ips_dns.txt
 #
 # Entrada:
 #   - Archivo TXT con subdominios (uno por línea)
 #
 # Salidas:
-#   - ip_domains.csv
+#   - domain_ip.csv
 #   - unique_ips_dns.txt
 
 set -e
 
 INPUT_FILE=""
-OUTPUT_CSV="ip_domains.csv"
+OUTPUT_CSV="domain_ip.csv"
 UNIQUE_IPS_FILE="unique_ips_dns.txt"
 
 usage() {
@@ -46,10 +48,11 @@ fi
 TOTAL_DOMAINS=$(grep -cv '^\s*$' "$INPUT_FILE")
 CURRENT=0
 
-declare -A IP_DOMAINS
-declare -A DOMAIN_SEEN
-
 echo "[+] Resolviendo subdominios DNS ($TOTAL_DOMAINS dominios)"
+
+# Inicializar salidas
+echo "domain,ip_or_domain" > "$OUTPUT_CSV"
+> "$UNIQUE_IPS_FILE"
 
 # Resolución DNS con progreso
 while IFS= read -r domain; do
@@ -59,51 +62,27 @@ while IFS= read -r domain; do
   CURRENT=$((CURRENT + 1))
   echo -ne "[+] Progreso: $CURRENT/$TOTAL_DOMAINS\r"
 
-  ips=$(dig +short A "$domain")
+  results=$(dig +short "$domain")
 
-  for ip in $ips; do
-    # Evitar duplicar el mismo dominio para una IP
-    key="${ip}|${domain}"
-    if [[ -z "${DOMAIN_SEEN[$key]}" ]]; then
-      IP_DOMAINS["$ip"]+="${domain} "
-      DOMAIN_SEEN["$key"]=1
-      echo "$ip" >> "$UNIQUE_IPS_FILE"
+  for result in $results; do
+    echo "$domain,$result" >> "$OUTPUT_CSV"
+
+    # Guardar solo IPs IPv4 numéricas en unique_ips_dns.txt
+    if [[ "$result" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      echo "$result" >> "$UNIQUE_IPS_FILE"
     fi
   done
 
 done < "$INPUT_FILE"
 
-echo
-echo "[+] Resolución DNS finalizada. Procesando resultados..."
-
-# Deduplicar IPs
+# Deduplicar IPs numéricas
 sort -u "$UNIQUE_IPS_FILE" -o "$UNIQUE_IPS_FILE"
 
-# Determinar máximo de dominios por IP (para el header)
-MAX_DOMAINS=0
-for ip in "${!IP_DOMAINS[@]}"; do
-  COUNT=$(echo "${IP_DOMAINS[$ip]}" | wc -w)
-  (( COUNT > MAX_DOMAINS )) && MAX_DOMAINS=$COUNT
-done
-
-# Construir header dinámico
-HEADER="ip"
-for ((i=1; i<=MAX_DOMAINS; i++)); do
-  HEADER+=",domain_$i"
-done
-echo "$HEADER" > "$OUTPUT_CSV"
-
-# Construir filas
-for ip in "${!IP_DOMAINS[@]}"; do
-  ROW="$ip"
-  for domain in ${IP_DOMAINS[$ip]}; do
-    ROW+=",$domain"
-  done
-  echo "$ROW" >> "$OUTPUT_CSV"
-done
-
 TOTAL_IPS=$(wc -l < "$UNIQUE_IPS_FILE")
+TOTAL_ROWS=$(($(wc -l < "$OUTPUT_CSV") - 1))
 
+echo
+echo "[+] Resolución DNS finalizada."
 echo "[+] Archivo generado: $OUTPUT_CSV"
-echo "[+] IPs únicas detectadas: $TOTAL_IPS"
-echo "[+] Máximo de dominios asociados a una IP: $MAX_DOMAINS"
+echo "[+] Filas domain→resultado generadas: $TOTAL_ROWS"
+echo "[+] IPs IPv4 únicas detectadas: $TOTAL_IPS"
